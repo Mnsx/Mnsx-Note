@@ -2897,7 +2897,7 @@ public class ThreadLocalDemo {
 }
 ```
 
-使用Thread Local之后必须将其remove
+**使用Thread Local之后必须将其remove**
 
 ```java
 class MyData {
