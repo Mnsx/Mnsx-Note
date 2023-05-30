@@ -2756,11 +2756,11 @@ public @interface Autowired {
 
 * @Autowired标注在字段上面
 
-  ![Autowired_1](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\@Autowired_1.png)
+  ![Autowired_1](Picture\Spring\@Autowired_1.png)
 
 * @Autowired标注在方法上后者方法参数上
 
-  ![Autowired_2](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\@Autowired_2.png)
+  ![Autowired_2](Picture\Spring\@Autowired_2.png)
 
 **将指定类型的所有Bean注入到Collection中**
 
@@ -2805,11 +2805,11 @@ public @interface Resource {
 
 * @Resource标注在字段上
 
-![Resource_1](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\@Resource_1.png)
+![Resource_1](Picture\Spring\@Resource_1.png)
 
 * @Resource标注在方法上或者方法参数上
 
-  ![Resource_2](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\@Resource_2.png)
+  ![Resource_2](Picture\Spring\@Resource_2.png)
 
 **将指定类型的所有Bean注入到Collection中**
 
@@ -4404,7 +4404,7 @@ protected void registerBeanPostProcessors(ConfigurableListableBeanFactory beanFa
 
 ## Bean生命周期流程
 
-![Bean生命周期](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\Bean生命周期.png)
+![Bean生命周期](Picture\Spring\Bean生命周期.png)
 
 # 父子容器详解
 
@@ -5477,6 +5477,336 @@ public class MainConfig {
 
 # Bean循环依赖
 
+> 主要针对“请讲一下Spring中的循环依赖”问题的解答方案
+>
+> 解答方向
+>
+> 1. 什么是循环依赖？
+> 2. 什么情况下循环依赖可以被处理？
+> 3. Spring是如何解决循环依赖？
+
+## 什么是循环依赖？
+
+![循环依赖](Picture\Spring\循环依赖.png)
+
+## 什么情况下循环依赖可以被处理？
+
+Spring解决循环依赖是有前置条件的
+
+1. 出现循环依赖的Bean必须是单例的
+2. 依赖注入的方式不能全是构造器注入的方式
+
+| 依赖情况   | 依赖注入方式                                     | 循环依赖是否被解决 |
+| ---------- | ------------------------------------------------ | ------------------ |
+| AB相互依赖 | 均采用setter方式注入                             | 是                 |
+| AB相互依赖 | 均采用构造器方式注入                             | 否                 |
+| AB相互依赖 | A中注入B的方式为setter，B中注入A的方式是为构造器 | 是                 |
+| AB相互依赖 | B中注入A的方式为setter，A中注入B的方式是为构造器 | 否                 |
+
+## Spring是如何解决循环依赖？
+
+### 简单的循环依赖（没有AOP）
+
+```java
+@Component
+public class A {
+    // A中注入了B
+    @Autowired
+    private B b;
+}
+
+@Component
+public class B {
+    // B中也注入了A
+    @Autowired
+    private A a;
+}
+```
+
+首先，Spring在创建Bean的时候默认是按照自然排序来进行创建的，所以第一步Spring会先创建A
+
+> Spring在创建Bean的过程中分为三步
+>
+> 1. 实例化，对应方法：AbstractAutowireCapableBeanFactory#createBeanInstance
+> 2. 属性注入，对应方法：AbstractAutowireCapableBeanFactory#polulateBean方法
+> 3. 初始化，对应方法：AbstractAutowireCapableBeanFactory#initializeBean
+
+调用getBean获取A
+
+```java
+@Override
+public Object getBean(String name) throws BeansException {
+    return doGetBean(name, null, null, false);
+}
+
+@Override
+public <T> T getBean(String name, Class<T> requiredType) throws BeansException {
+    return doGetBean(name, requiredType, null, false);
+}
+```
+
+getBean主要的逻辑处理是调用doGetBean方法
+
+```java
+protected <T> T doGetBean(
+    String name, @Nullable Class<T> requiredType, @Nullable Object[] args, boolean typeCheckOnly)
+    throws BeansException {
+
+    String beanName = transformedBeanName(name);
+    Object bean;
+
+    // 判断一级缓存中是否有这个bean
+    Object sharedInstance = getSingleton(beanName);
+    if (sharedInstance != null && args == null) {
+        // 如果有直接获取这个bean
+        bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+    }
+
+    else {
+        // 不存在，但是这个Bean已经在创建过程中，那么报错循环依赖
+        if (isPrototypeCurrentlyInCreation(beanName)) {
+            throw new BeanCurrentlyInCreationException(beanName);
+        }
+
+       	// 判断父容器中是否存在这个Bean
+        BeanFactory parentBeanFactory = getParentBeanFactory();
+        if (parentBeanFactory != null && !containsBeanDefinition(beanName)) {
+            String nameToLookup = originalBeanName(name);
+            if (parentBeanFactory instanceof AbstractBeanFactory) {
+                return ((AbstractBeanFactory) parentBeanFactory).doGetBean(
+                    nameToLookup, requiredType, args, typeCheckOnly);
+            }
+            else if (args != null) {
+                return (T) parentBeanFactory.getBean(nameToLookup, args);
+            }
+            else if (requiredType != null) {
+                return parentBeanFactory.getBean(nameToLookup, requiredType);
+            }
+            else {
+                return (T) parentBeanFactory.getBean(nameToLookup);
+            }
+        }
+
+        if (!typeCheckOnly) {
+            markBeanAsCreated(beanName);
+        }
+
+        try {
+            RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+            checkMergedBeanDefinition(mbd, beanName, args);
+			
+            // 处理dependsOn
+            String[] dependsOn = mbd.getDependsOn();
+            if (dependsOn != null) {
+                for (String dep : dependsOn) {
+                    if (isDependent(beanName, dep)) {
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                                        "Circular depends-on relationship between '" + beanName + "' and '" + dep + "'");
+                    }
+                    registerDependentBean(dep, beanName);
+                    try {
+                        getBean(dep);
+                    }
+                    catch (NoSuchBeanDefinitionException ex) {
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                                        "'" + beanName + "' depends on missing bean '" + dep + "'", ex);
+                    }
+                }
+            }
+
+            // 创建Bean实例
+            if (mbd.isSingleton()) {
+                sharedInstance = getSingleton(beanName, () -> {
+                    try {
+                        return createBean(beanName, mbd, args);
+                    }
+                    catch (BeansException ex) {
+                        destroySingleton(beanName);
+                        throw ex;
+                    }
+                });
+                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+            }
+
+            // prototype类型bean处理
+            else if (mbd.isPrototype()) {
+                Object prototypeInstance = null;
+                try {
+                    beforePrototypeCreation(beanName);
+                    prototypeInstance = createBean(beanName, mbd, args);
+                }
+                finally {
+                    afterPrototypeCreation(beanName);
+                }
+                bean = getObjectForBeanInstance(prototypeInstance, name, beanName, mbd);
+            }
+
+            else {
+                String scopeName = mbd.getScope();
+                if (!StringUtils.hasLength(scopeName)) {
+                    throw new IllegalStateException("No scope name defined for bean ´" + beanName + "'");
+                }
+                Scope scope = this.scopes.get(scopeName);
+                if (scope == null) {
+                    throw new IllegalStateException("No Scope registered for scope name '" + scopeName + "'");
+                }
+                try {
+                    Object scopedInstance = scope.get(beanName, () -> {
+                        beforePrototypeCreation(beanName);
+                        try {
+                            return createBean(beanName, mbd, args);
+                        }
+                        finally {
+                            afterPrototypeCreation(beanName);
+                        }
+                    });
+                    bean = getObjectForBeanInstance(scopedInstance, name, beanName, mbd);
+                }
+                catch (IllegalStateException ex) {
+                    throw new BeanCreationException(beanName,
+                                                    "Scope '" + scopeName + "' is not active for the current thread; consider " +
+                                                    "defining a scoped proxy for this bean if you intend to refer to it from a singleton",
+                                                    ex);
+                }
+            }
+        }
+        catch (BeansException ex) {
+            cleanupAfterBeanCreationFailure(beanName);
+            throw ex;
+        }
+    }
+    if (requiredType != null && !requiredType.isInstance(bean)) {
+        try {
+            T convertedBean = getTypeConverter().convertIfNecessary(bean, requiredType);
+            if (convertedBean == null) {
+                throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+            }
+            return convertedBean;
+        }
+        catch (TypeMismatchException ex) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Failed to convert bean '" + name + "' to required type '" +
+                             ClassUtils.getQualifiedName(requiredType) + "'", ex);
+            }
+            throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+        }
+    }
+    return (T) bean;
+}
+```
+
+doGetBean中这一次主要关注getSingleton(beanName, true)方法
+
+getSingleton(beanName, true)这个方法实际上就是到缓存中尝试获取Bean
+
+1. singletonObjects，一级缓存，存储的是所有创建好的单例Bean
+2. earlySingletonObjects，二级缓存，完成实例化，但是还未进行属性注入及初始化对象
+3. singletonFactories，提前暴露的一个单例工厂，二级缓存中存储的就是从这个工厂中获取到的对象
+
+```java
+@Nullable
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+	// 检查一级缓存中是否存在这个bean
+    Object singletonObject = this.singletonObjects.get(beanName);
+    if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+        // 检查二级缓存中是否存在这个bean
+        singletonObject = this.earlySingletonObjects.get(beanName);
+        if (singletonObject == null && allowEarlyReference) {
+            synchronized (this.singletonObjects) {
+                上锁，并进行double-check
+                singletonObject = this.singletonObjects.get(beanName);
+                if (singletonObject == null) {
+                    singletonObject = this.earlySingletonObjects.get(beanName);
+                    if (singletonObject == null) {
+                        // 从三级缓存中获取这个bean
+                        ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+                        if (singletonFactory != null) {
+                            singletonObject = singletonFactory.getObject();
+                            this.earlySingletonObjects.put(beanName, singletonObject);
+                            this.singletonFactories.remove(beanName);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return singletonObject;
+}
+```
+
+因为没有在三级缓存中获取到bean对象，那么将初始化这个bean
+
+```java
+if (mbd.isSingleton()) {
+    sharedInstance = getSingleton(beanName, () -> {
+        try {
+            return createBean(beanName, mbd, args);
+        }
+        catch (BeansException ex) {
+            destroySingleton(beanName);
+            throw ex;
+        }
+    });
+    bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+}
+```
+
+其中调用getSingleton方法
+
+```java
+public Object getSingleton(String beanName, ObjectFactory<?> singletonFactory) {
+    Assert.notNull(beanName, "Bean name must not be null");
+    synchronized (this.singletonObjects) {
+        Object singletonObject = this.singletonObjects.get(beanName);
+        if (singletonObject == null) {
+            if (this.singletonsCurrentlyInDestruction) {
+                throw new BeanCreationNotAllowedException(beanName,
+                                                          "Singleton bean creation not allowed while singletons of this factory are in destruction " +
+                                                          "(Do not request a bean from a BeanFactory in a destroy method implementation!)");
+            }
+            beforeSingletonCreation(beanName);
+            boolean newSingleton = false;
+            boolean recordSuppressedExceptions = (this.suppressedExceptions == null);
+            if (recordSuppressedExceptions) {
+                this.suppressedExceptions = new LinkedHashSet<>();
+            }
+            try {
+                singletonObject = singletonFactory.getObject();
+                newSingleton = true;
+            }
+            catch (IllegalStateException ex) {
+                // Has the singleton object implicitly appeared in the meantime ->
+                // if yes, proceed with it since the exception indicates that state.
+                singletonObject = this.singletonObjects.get(beanName);
+                if (singletonObject == null) {
+                    throw ex;
+                }
+            }
+            catch (BeanCreationException ex) {
+                if (recordSuppressedExceptions) {
+                    for (Exception suppressedException : this.suppressedExceptions) {
+                        ex.addRelatedCause(suppressedException);
+                    }
+                }
+                throw ex;
+            }
+            finally {
+                if (recordSuppressedExceptions) {
+                    this.suppressedExceptions = null;
+                }
+                afterSingletonCreation(beanName);
+            }
+            if (newSingleton) {
+                addSingleton(beanName, singletonObject);
+            }
+        }
+        return singletonObject;
+    }
+}
+```
+
+在bean创建之前，会调用beforeSingletonCreation(beanName)这个方法检查是否出现循环依赖
+
 ```java
 protected void beforeSingletonCreation(String beanName) {
     if (!this.inCreationCheckExclusions.contains(beanName) && !this.singletonsCurrentlyInCreation.add(beanName)) {
@@ -5485,450 +5815,162 @@ protected void beforeSingletonCreation(String beanName) {
 }
 ```
 
-singletonsCurrentlyInCreation是用来记录目前正在创建中的bean名称列表，this.singletonsCurrentlyInCreation.add(beanName)返回false，说明beanName已经在列表中，此时会抛出循环依赖异常BeanCurrentlyInCreationException
+这就是循环依赖会报错的原因
 
 ```java
-public BeanCurrentlyInCreationException(String beanName) {
-    super(beanName,
-          "Requested bean is currently in creation: Is there an unresolvable circular reference?");
+try {
+    singletonObject = singletonFactory.getObject();
+    newSingleton = true;
 }
 ```
 
-prototype类型，`org.springframework.beans.factory.support.AbstractBeanFactory#doGetBean`
+调用通过参数传入的匿名函数
 
 ```java
-//检查正在创建的bean列表中是否存在beanName，如果存在，说明存在循环依赖，抛出循环依赖的异常
-if (isPrototypeCurrentlyInCreation(beanName)) {
-    throw new BeanCurrentlyInCreationException(beanName);
+try {
+    return createBean(beanName, mbd, args);
 }
- 
-//判断scope是否是prototype
-if (mbd.isPrototype()) {
-    Object prototypeInstance = null;
-    try {
-        //将beanName放入正在创建的列表中
-        beforePrototypeCreation(beanName);
-        prototypeInstance = createBean(beanName, mbd, args);
-    }
-    finally {
-        //将beanName从正在创建的列表中移除
-        afterPrototypeCreation(beanName);
-    }
+catch (BeansException ex) {
+    destroySingleton(beanName);
+    throw ex;
 }
 ```
 
-## 如何解决循环依赖问题
-
-* 通过构造器方式注入依赖
-
-  通过构造器方式导致的循环依赖是无法解决的
-
-* 通过非构造器方式注入依赖
-
-  由于单例bean在Spring容器中肯定只会存在一个，所以Spring中肯定有一个缓存用来存放已经创建好的bean，在获取单例bean之前，先从缓存中查找，如果找到直接返回，如果没有找到再创建，然后放入单例缓存中
-
-  ```java
-  Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
-  ```
-
-  > 1.spring轮询准备创建2个bean：serviceA和serviceB
-  > 2.spring容器发现singletonObjects中没有serviceA
-  > 3.调用serviceA的构造器创建serviceA实例
-  > 4.serviceA准备注入依赖的对象，发现需要通过setServiceB注入serviceB
-  > 5.serviceA向spring容器查找serviceB
-  > 6.spring容器发现singletonObjects中没有serviceB
-  > 7.调用serviceB的构造器创建serviceB实例
-  > 8.serviceB准备注入依赖的对象，发现需要通过setServiceA注入serviceA
-  > 9.serviceB向spring容器查找serviceA
-  > 10.此时又进入步骤2了
-
-  出现循环了，需要在第三步完成之后，将Service放入singletonObjects中，这样就可以解决循环了
-
-  **Spring中解决方式与上面差不多，Spring内部使用三级缓存来解决**
-
-  ```java
-  /** 第一级缓存：单例bean的缓存 */
-  private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
-   
-  /** 第二级缓存：早期暴露的bean的缓存 */
-  private final Map<String, Object> earlySingletonObjects = new HashMap<>(16);
-   
-  /** 第三级缓存：单例bean工厂的缓存 */
-  private final Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
-  ```
-
-  首先serviceA会调用
-
-  ```java
-  org.springframework.beans.factory.support.AbstractBeanFactory#doGetBean
-   
-  protected <T> T doGetBean(final String name, @Nullable final Class<T> requiredType,
-                                @Nullable final Object[] args, boolean typeCheckOnly) throws BeansException {
-      //1.查看缓存中是否已经有这个bean了
-      Object sharedInstance = getSingleton(beanName);
-      if (sharedInstance != null && args == null) {
-          bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
-      }else {
-          //若缓存中不存在，准备创建这个bean
-          if (mbd.isSingleton()) {
-              //2.下面进入单例bean的创建过程
-              sharedInstance = getSingleton(beanName, () -> {
-                  try {
-                      return createBean(beanName, mbd, args);
-                  }
-                  catch (BeansException ex) {
-                      throw ex;
-                  }
-              });
-              bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
-          }
-      }
-      return (T) bean;
-  }
-  ```
-
-  调用getSingleton方法查看缓存中是否有这个bean
-
-  ```java
-  public Object getSingleton(String beanName) {
-      return getSingleton(beanName, true);
-  }
-  ```
-
-  然后会进入以下方法尝试从三级缓存中找到这个bean，**只有当第二个参数为true时，才会从三级中找，否则只会找一二级**
-
-  ```java
-  //allowEarlyReference:是否允许从三级缓存singletonFactories中通过getObject拿到bean
-  protected Object getSingleton(String beanName, boolean allowEarlyReference) {
-      //1.先从一级缓存中找
-      Object singletonObject = this.singletonObjects.get(beanName);
-      if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
-          synchronized (this.singletonObjects) {
-              //2.从二级缓存中找
-              singletonObject = this.earlySingletonObjects.get(beanName);
-              if (singletonObject == null && allowEarlyReference) {
-                  //3.二级缓存中没找到 && allowEarlyReference为true的情况下,从三级缓存中找
-                  ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
-                  if (singletonFactory != null) {
-                      //三级缓存返回的是一个工厂，通过工厂来获取创建bean
-                      singletonObject = singletonFactory.getObject();
-                      //将创建好的bean丢到二级缓存中
-                      this.earlySingletonObjects.put(beanName, singletonObject);
-                      //从三级缓存移除
-                      this.singletonFactories.remove(beanName);
-                  }
-              }
-          }
-      }
-      return singletonObject;
-  }
-  ```
-
-  第一次进入时，在三级缓存中肯定无法找到bean
-  
-  ```java
-  if (mbd.isSingleton()) {
-      sharedInstance = getSingleton(beanName, () -> { 
-          try {
-              return createBean(beanName, mbd, args);
-          }
-          catch (BeansException ex) {
-              destroySingleton(beanName);
-              throw ex;
-          }
-      });
-  }
-  ```
-  
-  进入getSingleton方法
-  
-  ```java
-  public Object getSingleton(String beanName, ObjectFactory<?> singletonFactory) {
-      synchronized (this.singletonObjects) {
-          Object singletonObject = this.singletonObjects.get(beanName);
-          if (singletonObject == null) {
-              //单例bean创建之前调用，将其加入正在创建的列表中，上面有提到过，主要用来检测循环依赖用的
-              beforeSingletonCreation(beanName);
-              boolean newSingleton = false;
-   
-              try {
-                  //调用工厂创建bean
-                  singletonObject = singletonFactory.getObject();
-                  newSingleton = true;
-              }
-              finally {
-                   //单例bean创建之前调用,主要是将其从正在创建的列表中移除
-                  afterSingletonCreation(beanName);
-              }
-              if (newSingleton) {
-                  //将创建好的单例bean放入缓存中
-                  addSingleton(beanName, singletonObject);
-              }
-          }
-          return singletonObject;
-      }
-  }
-  ```
-  
-  singletonFactory是从参数传递进来的ObjectFactory，调用回调函数创建SingletonBean
-  
-  ```java
-  try {
-      return createBean(beanName, mbd, args);
-  }
-  catch (BeansException ex) {
-      destroySingleton(beanName);
-      throw ex;
-  }
-  ```
-  
-  调用createBean方法最终会执行
-  
-  ```java
-  org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
-  ```
-  
-  ```java
-  BeanWrapper instanceWrapper = null;
-   
-  if (instanceWrapper == null) {
-      //通过反射调用构造器实例化serviceA
-      instanceWrapper = createBeanInstance(beanName, mbd, args);
-  }
-  //变量bean：表示刚刚同构造器创建好的bean示例
-  final Object bean = instanceWrapper.getWrappedInstance();
-   
-  //判断是否需要暴露早期的bean，条件为（是否是单例bean && 当前容器允许循环依赖 && bean名称存在于正在创建的bean名称清单中）
-  boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
-                                    isSingletonCurrentlyInCreation(beanName));
-  if (earlySingletonExposure) {
-      //若earlySingletonExposure为true，通过下面代码将早期的bean暴露出去
-      addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
-  }
-  ```
-  
-  **早期Bean就是刚刚实例化好的Bean，此时Bean还未进行属性填充、初始化等操作**
-  
-  通过addSingletonFactory用于将早期Bean暴露出去，主要是将其放入第三级缓存中
-  
-  ```java
-  protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
-      Assert.notNull(singletonFactory, "Singleton factory must not be null");
-      synchronized (this.singletonObjects) {
-          //第1级缓存中不存在bean
-          if (!this.singletonObjects.containsKey(beanName)) {
-              //将其丢到第3级缓存中
-              this.singletonFactories.put(beanName, singletonFactory);
-              //后面的2行代码不用关注
-              this.earlySingletonObjects.remove(beanName);
-              this.registeredSingletons.add(beanName);
-          }
-      }
-  }
-  ```
-  
-  执行了上述操作，那么serviceA将被放入三级缓存中
-  
-  后续的过程serviceA开始注入依赖的对象，发现需要注入serviceB，会从容器中获取serviceB，而serviceB的获取又会走和上述方法一样的过程，serviceB将提前暴露，然后serviceB开始注入依赖对象，serviceB发现需要依赖serviceA，此时去容器中找，会先从缓存中找，执行`getSingleton("servcieA", true)`
-  
-  ```java
-  protected Object getSingleton(String beanName, boolean allowEarlyReference) {
-      //1.先从一级缓存中找
-      Object singletonObject = this.singletonObjects.get(beanName);
-      if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
-          synchronized (this.singletonObjects) {
-              //2.从二级缓存中找
-              singletonObject = this.earlySingletonObjects.get(beanName);
-              if (singletonObject == null && allowEarlyReference) {
-                  //3.二级缓存中没找到 && allowEarlyReference为true的情况下,从三级缓存中找
-                  ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
-                  if (singletonFactory != null) {
-                      //三级缓存返回的是一个工厂，通过工厂来获取创建bean
-                      singletonObject = singletonFactory.getObject();
-                      //将创建好的bean丢到二级缓存中
-                      this.earlySingletonObjects.put(beanName, singletonObject);
-                      //从三级缓存移除
-                      this.singletonFactories.remove(beanName);
-                  }
-              }
-          }
-      }
-      return singletonObject;
-  }
-  ```
-  
-  因为serviceA的早期Bean已经暴露，所以在二级缓存中能够找到，此时serviceB的serviceA注入成功，serviceB继续完成创建，然后将自己返回给serviceA，此时serviceA通过set方法设置serviceB
-  
-  serviceA创建成功，会调用addSingleton方法将其加入缓存中
-  
-  ```java
-  protected void addSingleton(String beanName, Object singletonObject) {
-      synchronized (this.singletonObjects) {
-          //将bean放入第1级缓存中
-          this.singletonObjects.put(beanName, singletonObject);
-          //将其从第3级缓存中移除
-          this.singletonFactories.remove(beanName);
-          //将其从第2级缓存中移除
-          this.earlySingletonObjects.remove(beanName);
-      }
-  }
-  ```
-  
-  **主要流程**
-  
-  > 1.从容器中获取serviceA
-  > 2.容器尝试从3个缓存中找serviceA，找不到
-  > 3.准备创建serviceA
-  > 4.调用serviceA的构造器创建serviceA，得到serviceA实例，此时serviceA还未填充属性，未进行其他任何初始化的操作
-  > 5.将早期的serviceA暴露出去：即将其丢到第3级缓存singletonFactories中
-  > 6.serviceA准备填充属性，发现需要注入serviceB，然后向容器获取serviceB
-  > 7.容器尝试从3个缓存中找serviceB，找不到
-  > 8.准备创建serviceB
-  > 9.调用serviceB的构造器创建serviceB，得到serviceB实例，此时serviceB还未填充属性，未进行其他任何初始化的操作
-  > 10.将早期的serviceB暴露出去：即将其丢到第3级缓存singletonFactories中
-  > 11.serviceB准备填充属性，发现需要注入serviceA，然后向容器获取serviceA
-  > 12.容器尝试从3个缓存中找serviceA，发现此时serviceA位于第3级缓存中，经过处理之后，serviceA会从第3级缓存中移除，然后会存到第2级缓存中，然后将其返回给serviceB，此时serviceA通过serviceB中的setServiceA方法被注入到serviceB中
-  > 13.serviceB继续执行后续的一些操作，最后完成创建工作，然后会调用addSingleton方法，将自己丢到第1级缓存中，并将自己从第2和第3级缓存中移除
-  > 14.serviceB将自己返回给serviceA
-  > 15.serviceA通过setServiceB方法将serviceB注入进去
-  > 16.serviceB继续执行后续的一些操作，最后完成创建工作,然后会调用addSingleton方法，将自己丢到第1级缓存中，并将自己从第2和第3级缓存中移除
-
-## 循环依赖无法解决的情况
-
-**只有单例的bean会通过三级缓存提前暴露来解决循环依赖的问题，而非单例的bean，每次从容器中获取都是一个新的对象，都会重新创建，所以非单例的bean是没有缓存的，不会将其放到三级缓存中**
-
-## 为什么要使用三级缓存？
-
-**这样做可以解决，早期暴露给其他依赖者的bean和最终暴露的bean不一致的问题，问题如下，出现不一致的情况，爆出异常**
-
-**案例**
-
-* ServiceA
-
-  ```java
-  @Component
-  public class ServiceA {
-      public void m1() {
-          System.out.println("serviceB m1");
-      }
-  
-      private ServiceB serviceB;
-  
-      @Autowired
-      private void setServiceB(ServiceB serviceB) {
-          this.serviceB = serviceB;
-      }
-  }
-  ```
-
-* ServiceB
-
-  ```java
-  @Component
-  public class ServiceB {
-      public void m1() {
-          System.out.println("ServiceB m1");
-          this.serviceA.m1();
-      }
-  
-      private ServiceA serviceA;
-  
-      @Autowired
-      private void setServiceA(ServiceA serviceA) {
-          this.serviceA = serviceA;
-      }
-  
-      public ServiceA getServiceA() {
-          return serviceA;
-      }
-  }
-  ```
-
-* MethodBeforeInterceptor
-
-  ```java
-  @Component
-  public class MethodBeforeInterceptor implements BeanPostProcessor {
-      @Override
-      public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
-          if ("serviceA".equals(beanName)) {
-              //代理创建工厂，需传入被代理的目标对象
-              ProxyFactory proxyFactory = new ProxyFactory(bean);
-              //添加一个方法前置通知，会在方法执行之前调用通知中的before方法
-              proxyFactory.addAdvice(new MethodBeforeAdvice() {
-                  @Override
-                  public void before(Method method, Object[] args, Object target) throws Throwable {
-                      System.out.println("hello serviceA");
-                  }
-              });
-              return proxyFactory.getProxy();
-          }
-          return bean;
-      }
-  }
-  ```
-
-* 执行结果
-
-  ```shell
-  Error creating bean with name 'serviceA': Bean with name 'serviceA' has been injected into other beans [serviceB] in its raw version as part of a circular reference, but has eventually been wrapped. This means that said other beans do not use the final version of the bean. This is often the result of over-eager type matching - consider using 'getBeanNamesForType' with the 'allowEagerInit' flag turned off, for example.
-  ```
-
-* 报错原因
-
-  ```java
-  if (earlySingletonExposure) {
-      // 调用getSingleton(beanName, false)这个方法主要是从三级缓存中获取单例bean，但是第二个参数为false，所以不会从第三级缓存中找
-      Object earlySingletonReference = getSingleton(beanName, false);
-      if (earlySingletonReference != null) {
-          // 这个地方判断早期暴露的bean和最终的bean是否是同一个，因为serviceA被代理了，所以这个地方改为false
-          if (exposedObject == bean) {
-              exposedObject = earlySingletonReference;
-          }
-          // allowRawInjectionDespiteWrapping这个参数用来控制是否允许循环依赖的情况，通俗一点：是否允许早期暴露的bean和最终的bean不一致，这个值默认为false，
-          else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
-              String[] dependentBeans = getDependentBeans(beanName);
-              Set<String> actualDependentBeans = new LinkedHashSet<>(dependentBeans.length);
-              for (String dependentBean : dependentBeans) {
-                  if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
-                      actualDependentBeans.add(dependentBean);
-                  }
-              }
-              if (!actualDependentBeans.isEmpty()) {
-                  throw new BeanCurrentlyInCreationException(beanName,
-                                                             "Bean with name '" + beanName + "' has been injected into other beans [" +
-                                                             StringUtils.collectionToCommaDelimitedString(actualDependentBeans) +
-                                                             "] in its raw version as part of a circular reference, but has eventually been " +
-                                                             "wrapped. This means that said other beans do not use the final version of the " +
-                                                             "bean. This is often the result of over-eager type matching - consider using " +
-                                                             "'getBeanNamesOfType' with the 'allowEagerInit' flag turned off, for example.");
-              }
-          }
-      }
-  }
-  ```
-
-那么只需要将allowRawInjectionDespiteWrapping参数改为true即可
+调用createBean方法
 
 ```java
-@SpringBootApplication
-public class SpringStudyApplication {
-    public static void main(String[] args) {
-        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
-        context.addBeanFactoryPostProcessor(beanFactory -> {
-            if (beanFactory instanceof DefaultListableBeanFactory) {
-                ((DefaultListableBeanFactory) beanFactory).setAllowRawInjectionDespiteWrapping(true);
+	@Override
+	protected Object createBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)
+			throws BeanCreationException {
+
+		RootBeanDefinition mbdToUse = mbd;
+
+		Class<?> resolvedClass = resolveBeanClass(mbd, beanName);
+		if (resolvedClass != null && !mbd.hasBeanClass() && mbd.getBeanClassName() != null) {
+			mbdToUse = new RootBeanDefinition(mbd);
+			mbdToUse.setBeanClass(resolvedClass);
+		}
+
+		try {
+			mbdToUse.prepareMethodOverrides();
+		}
+		catch (BeanDefinitionValidationException ex) {
+			throw new BeanDefinitionStoreException(mbdToUse.getResourceDescription(),
+					beanName, "Validation of method overrides failed", ex);
+		}
+
+		try {
+			Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
+			if (bean != null) {
+				return bean;
+			}
+		}
+		catch (Throwable ex) {
+			throw new BeanCreationException(mbdToUse.getResourceDescription(), beanName,
+					"BeanPostProcessor before instantiation of bean failed", ex);
+		}
+
+		try {
+			Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+			if (logger.isTraceEnabled()) {
+				logger.trace("Finished creating instance of bean '" + beanName + "'");
+			}
+			return beanInstance;
+		}
+		catch (BeanCreationException | ImplicitlyAppearedSingletonException ex) {
+			throw ex;
+		}
+		catch (Throwable ex) {
+			throw new BeanCreationException(
+					mbdToUse.getResourceDescription(), beanName, "Unexpected exception during bean creation", ex);
+		}
+	}
+```
+
+通过createBean返回的Bean最终放到了一级缓存中
+
+createBean主要的逻辑是调用doCreateBean方法
+
+`Object beanInstance = doCreateBean(beanName, mbdToUse, args);`
+
+```java
+protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)
+    throws BeanCreationException {
+
+	// 初始化这个Bean
+    BeanWrapper instanceWrapper = null;
+    if (mbd.isSingleton()) {
+        instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+    }
+    if (instanceWrapper == null) {
+        //通过反射调用构造器实例化
+        instanceWrapper = createBeanInstance(beanName, mbd, args);
+    }
+    // 表示刚才通过反射构造器实例化的Bean
+    Object bean = instanceWrapper.getWrappedInstance();
+    Class<?> beanType = instanceWrapper.getWrappedClass();
+    if (beanType != NullBean.class) {
+        mbd.resolvedTargetType = beanType;
+    }
+
+  	synchronized (mbd.postProcessingLock) {
+        if (!mbd.postProcessed) {
+            try {
+                applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
             }
-        });
-        context.register(MainConfig.class);
-        context.refresh();
+            catch (Throwable ex) {
+                throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                                "Post-processing of merged bean definition failed", ex);
+            }
+            mbd.postProcessed = true;
+        }
+    }
+
+    //判断是否需要暴露早期的bean，条件为（是否是单例bean && 当前容器允许循环依赖 && bean名称存在于正在创建的bean名称清单中）
+    boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
+                                      isSingletonCurrentlyInCreation(beanName));
+    if (earlySingletonExposure) {
+        if (logger.isTraceEnabled()) {
+            logger.trace("Eagerly caching bean '" + beanName +
+                         "' to allow for resolving potential circular references");
+        }
+        // 将这个Bean暴露出去
+        addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+    }
+	
+    // ...
+}
+```
+
+刚刚实例化好的Bean就是早期Bean，此时Bean还未进行属性填充，主要是将其放入三级缓存中
+
+```java
+protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
+    Assert.notNull(singletonFactory, "Singleton factory must not be null");
+    synchronized (this.singletonObjects) {
+        //第1级缓存中不存在bean
+        if (!this.singletonObjects.containsKey(beanName)) {
+            //将其丢到第3级缓存中
+            this.singletonFactories.put(beanName, singletonFactory);
+            //后面的2行代码不用关注
+            this.earlySingletonObjects.remove(beanName);
+            this.registeredSingletons.add(beanName);
+        }
     }
 }
 ```
 
-这个时候会发现，ServiceB中的ServiceA没有被拦截，因为其中注入的是早期暴露的bean，那应该怎么解决这个问题喃
+这里只是添加了一个工厂，通过这个工厂的getObject方法可以得到一个对象，而这个对象实际上就是通过getEarlyBeanReference这个方法创建的
 
-`addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));`
+那么，是在什么时候又需要调用这个工厂的getObject方法？
+
+当创建B时，会发现B的内部有属性A，那么会调用getBean(A)，但是这次不是为了创建A，而是从三级缓存中获取A
+
+```java
+addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+```
+
+可以看出主要通过getEarlyBeanReference方法获取提前暴露的一个对象
 
 ```java
 protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
@@ -5945,11 +5987,86 @@ protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, 
 }
 ```
 
-从3级缓存中获取bean的时候，会调用上面这个方法来获取bean，这个方法内部会看一下容器中是否有SmartInstantiationAwareBeanPostProcessor这种处理器，然后会依次调用这种处理器中的getEarlyBeanReference方法，那么思路来了，我们可以自定义一个SmartInstantiationAwareBeanPostProcessor，然后在其getEarlyBeanReference中来创建代理不就可以了
+这段代码的主要逻辑是轮询Bean后置处理器中的SmartInstantiationAwareBeanPostProcessor，然后调用其中的getEarlyBeanReference方法
 
-## 单例Bean循环依赖还存在什么问题？
+而真正实现了这个方法的只有一个，就是通过@EnableAspectAutoProxy注解导入的AnnotationAwareAspectJAutoProxyCreator，也就是说如果不考虑AOP，那么上面代码等价于
 
-循环依赖的情况下，由于注入的是早期的bean，此时早期的bean中还未被填充属性，初始化等各种操作，也就是说此时bean并没有被完全初始化完毕，此时若直接拿去使用，可能存在有问题的风险
+```java
+protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+    Object exposedObject = bean;
+    return exposedObject;
+}
+```
+
+也就是说，如果不考虑AOP，那么三级缓存没有什么用
+
+> B中提前注入了一个没有经过初始化的A类型对象不会有问题吗？
+>
+> 虽然在创建B时会提前给B注入了一个还未初始化的A对象，但是在创建A的流程中一直使用的是注入到B中的A对象的引用，之后会根据这个引用对A进行初始化，所以这是没有问题的
+
+### 结合了AOP的情况
+
+开启或者不开启AOP两者主要区别在于
+
+```java
+protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+    Object exposedObject = bean;
+    if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+        for (BeanPostProcessor bp : getBeanPostProcessors()) {
+            if (bp instanceof SmartInstantiationAwareBeanPostProcessor) {
+                SmartInstantiationAwareBeanPostProcessor ibp = (SmartInstantiationAwareBeanPostProcessor) bp;
+                exposedObject = ibp.getEarlyBeanReference(exposedObject, beanName);
+            }
+        }
+    }
+    return exposedObject;
+}
+```
+
+如果在开启AOP的情况下，那么就是调用到`AnnotationAwareAspectJAutoProxyCreator`的`getEarlyBeanReference`方法
+
+```java
+public Object getEarlyBeanReference(Object bean, String beanName) {
+    Object cacheKey = getCacheKey(bean.getClass(), beanName);
+    this.earlyProxyReferences.put(cacheKey, bean);
+    // 如果需要代理，返回一个代理对象，不需要代理，直接返回当前传入的这个bean对象
+    return wrapIfNecessary(bean, beanName, cacheKey);
+}
+```
+
+因为开启了AOP，那么A中注入的B，不是实例化阶段创建的对象，这样就意味着B中注入的A将是一个代理对象而不是A的实例化阶段创建后的对象
+
+```java
+Object exposedObject = bean;
+try {
+    populateBean(beanName, mbd, instanceWrapper);
+    exposedObject = initializeBean(beanName, exposedObject, mbd);
+}
+catch (Throwable ex) {
+    if (ex instanceof BeanCreationException && beanName.equals(((BeanCreationException) ex).getBeanName())) {
+        throw (BeanCreationException) ex;
+    }
+    else {
+        throw new BeanCreationException(
+            mbd.getResourceDescription(), beanName, "Initialization of bean failed", ex);
+    }
+}
+
+if (earlySingletonExposure) {
+    Object earlySingletonReference = getSingleton(beanName, false);
+    if (earlySingletonReference != null) {
+        if (exposedObject == bean) {
+            exposedObject = earlySingletonReference;
+        }
+    }
+}
+```
+
+**为什么要使用第三级缓存**
+
+**这个工厂的目的在于延迟对实例化阶段生成的对象的代理，只有真正发生循环依赖的时候，才去提前生成代理对象，否则只会创建一个工厂并将其放入到三级缓存中，但是不会去通过这个工厂去真正创建对象**
+
+**最后Spring的三级缓存并没有提升效率**
 
 # BeanFactory扩展
 
@@ -6167,7 +6284,765 @@ org.springframework.context.support.PostProcessorRegistrationDelegate#invokeBean
 
 # Spring上下文生命周期
 
+## 应用上下文的生命周期
 
+1. 创建Spring应用上下文
+2. 上下文启动准备阶段
+3. BeanFactory创建阶段
+4. BeanFactory准备阶段
+5. BeanFactory后置处理阶段
+6. BeanFactory注册BeanPostProcessor阶段
+7. 初始化内建Bean：MessageSource
+8. 初始化内建Bean：Spring事件广播器
+9. Spring应用上下文刷新阶段
+10. Spring事件监听器注册阶段
+11. 单例Bean实例化阶段
+12. BeanFactory初始化完成阶段
+13. Spring应用上下文启动完成阶段
+14. Spring应用上下文关闭阶段
+
+## 创建Spring应用上下文
+
+对应代码
+
+`AnnotationConfigApplicationContext configApplicationContext = new AnnotationConfigApplicationContext();`
+
+![AnnotationConfigApplicationContext类图](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\AnnotationConfigApplicationContext类图.png)
+
+当调用父类的构造器时会先调用子类的构造器
+
+```java
+public GenericApplicationContext() {
+    this.beanFactory = new DefaultListableBeanFactory();
+}
+```
+
+在这个构造函数中，创建了BeanFactory
+
+```java
+public AnnotationConfigApplicationContext() {
+    this.reader = new AnnotatedBeanDefinitionReader(this);
+    this.scanner = new ClassPathBeanDefinitionScanner(this);
+}
+```
+
+`new AnnotatedBeanDefinitionReader()`中有一个非常关键的方法，其中会创建5个关键Bean
+
+```java
+org.springframework.context.annotation.AnnotationConfigUtils#registerAnnotationConfigProcessors(org.springframework.beans.factory.support.BeanDefinitionRegistry, java.lang.Object)
+ 
+public static Set<BeanDefinitionHolder> registerAnnotationConfigProcessors(
+   BeanDefinitionRegistry registry, @Nullable Object source) {
+ 
+    //1、注册ConfigurationClassPostProcessor，这是个非常关键的类，实现了BeanDefinitionRegistryPostProcessor接口
+    // ConfigurationClassPostProcessor这个类主要做的事情：负责所有bean的注册
+    if (!registry.containsBeanDefinition(CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+        RootBeanDefinition def = new RootBeanDefinition(ConfigurationClassPostProcessor.class);
+        def.setSource(source);
+        beanDefs.add(registerPostProcessor(registry, def, CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME));
+    }
+ 
+    //2、注册AutowiredAnnotationBeanPostProcessor：负责处理@Autowire注解
+    if (!registry.containsBeanDefinition(AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+        RootBeanDefinition def = new RootBeanDefinition(AutowiredAnnotationBeanPostProcessor.class);
+        def.setSource(source);
+        beanDefs.add(registerPostProcessor(registry, def, AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME));
+    }
+ 
+    //3、注册CommonAnnotationBeanPostProcessor：负责处理@Resource注解
+    if (jsr250Present && !registry.containsBeanDefinition(COMMON_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+        RootBeanDefinition def = new RootBeanDefinition(CommonAnnotationBeanPostProcessor.class);
+        def.setSource(source);
+        beanDefs.add(registerPostProcessor(registry, def, COMMON_ANNOTATION_PROCESSOR_BEAN_NAME));
+    }
+ 
+ //4、注册EventListenerMethodProcessor：负责处理@EventListener标注的方法，即事件处理器
+    if (!registry.containsBeanDefinition(EVENT_LISTENER_PROCESSOR_BEAN_NAME)) {
+        RootBeanDefinition def = new RootBeanDefinition(EventListenerMethodProcessor.class);
+        def.setSource(source);
+        beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_PROCESSOR_BEAN_NAME));
+    }
+    
+ //5、注册DefaultEventListenerFactory：负责将@EventListener标注的方法包装为ApplicationListener对象
+    if (!registry.containsBeanDefinition(EVENT_LISTENER_FACTORY_BEAN_NAME)) {
+        RootBeanDefinition def = new RootBeanDefinition(DefaultEventListenerFactory.class);
+        def.setSource(source);
+        beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_FACTORY_BEAN_NAME));
+    }
+ 
+    return beanDefs;
+}
+```
+
+上面代码主要会注册5个Bean
+
+* ConfigurationClassPostProcessor：这是个非常关键的Bean，基本上自定义的Bean都是通过这个类注册的
+
+  ```shell
+  @Configuration
+  @Component
+  @PropertySource
+  @PropertySources
+  @ComponentScan
+  @ComponentScans
+  @Import
+  @ImportResource
+  @Bean
+  ```
+
+* AutowiredAnnotationBeanPostProcessor：负责处理@Autowire注解
+
+* 注册CommonAnnotationBeanPostProcessor：负责处理@Resource注解
+
+* 注解EventListenerMethodProcessor：负责处理@EventListener标注的方法，即事件处理器
+
+* 注册DefaultEventListenerFactory：负责将@EventListener标注的方法包装为ApplicationListener对象
+
+## 阶段2-阶段13
+
+阶段2-阶段13，这中间的12个阶段都位于refresh方法中
+
+```java
+org.springframework.context.support.AbstractApplicationContext#refresh
+
+    @Override
+    public void refresh() throws BeansException, IllegalStateException {
+    // 阶段2：Spring应用上下文启动准备阶段
+    prepareRefresh();
+
+    // 阶段3：BeanFactory创建阶段
+    ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+    // 阶段4：BeanFactory准备阶段
+    prepareBeanFactory(beanFactory);
+
+    try {
+        // 阶段5：BeanFactory后置处理阶段
+        postProcessBeanFactory(beanFactory);
+
+        // 阶段6：BeanFactory注册BeanPostProcessor阶段
+        invokeBeanFactoryPostProcessors(beanFactory);
+
+        // 阶段7：注册BeanPostProcessor
+        registerBeanPostProcessors(beanFactory);
+
+        // 阶段8：初始化内建Bean：MessageSource
+        initMessageSource();
+
+        // 阶段9：初始化内建Bean：Spring事件广播器
+        initApplicationEventMulticaster();
+
+        // 阶段10：Spring应用上下文刷新阶段，由子类实现
+        onRefresh();
+
+        // 阶段11：Spring事件监听器注册阶段
+        registerListeners();
+
+        // 阶段12：实例化所有剩余的（非lazy init）单例。
+        finishBeanFactoryInitialization(beanFactory);
+
+        // 阶段13：刷新完成阶段
+        finishRefresh();
+    }
+}
+```
+
+### Spring上下文启动准备阶段
+
+```java
+protected void prepareRefresh() {
+    // 标记启动时间
+    this.startupDate = System.currentTimeMillis();
+    // 是否关闭：false
+    this.closed.set(false);
+    // 是否启动：true
+    this.active.set(true);
+ 
+    // 初始化PropertySource，留个子类去实现的，可以在这个方法中扩展属性配置信息，丢到this.environment中
+    initPropertySources();
+ 
+    // 验证环境配置中是否包含必须的配置参数信息，比如我们希望上下文启动中，this.environment中必须要有某些属性的配置，才可以启动，那么可以在这个里面验证
+    getEnvironment().validateRequiredProperties();
+ 
+    // earlyApplicationListeners用来存放早期的事件监听器
+    if (this.earlyApplicationListeners == null) {
+        this.earlyApplicationListeners = new LinkedHashSet<>(this.applicationListeners);
+    }
+    else {
+        // 重置applicationListeners，并且更新集合
+        this.applicationListeners.clear();
+        this.applicationListeners.addAll(this.earlyApplicationListeners);
+    }
+ 
+    // earlyApplicationEvents用来存放早期的事件
+    this.earlyApplicationEvents = new LinkedHashSet<>();
+}
+```
+
+> **什么是早期事件？什么是早期的事件监听器？**
+>
+> 当使用Spring发布事务
+>
+> ```java
+> applicationContext.publishEvent(事件对象)
+> ```
+>
+> 其内部最终会用到AbstractApplicationContext下的这个属性来发布事件，但是可能此时applicationEventMulticaster还没有创建好，是空对象，所以此时是无法广播事件的，那么此时发布的事件就是早期事件，就会被放在this.earlyApplicationEvents中暂时存放，当事件广播器applicationEventMulticaster创建好之后，才会将早期事件广播出去
+>
+> ```java
+> applicationContext.addApplicationListener(事件监听器对象)
+> ```
+>
+> 同理，当applicationEventMulticaster还未准备好时，调用Spring上下文准备添加监听器，这时放进去的监听器就是早期的事件监听器
+
+### BeanFactory创建阶段
+
+这个阶段负责将BeanFactory创建好，返回给Spring应用上下文
+
+```java
+ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+```
+
+obtainFreshBeanFactory
+
+```java
+protected ConfigurableListableBeanFactory obtainFreshBeanFactory() {
+    //刷新BeanFactory，由子类实现
+    refreshBeanFactory();
+    //返回spring上下文中创建好的BeanFacotry
+    return getBeanFactory();
+}
+```
+
+### BeanFactory准备阶段
+
+```java
+prepareBeanFactory(beanFactory);
+```
+
+```java
+protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+    // 设置类加载器
+    beanFactory.setBeanClassLoader(getClassLoader());
+    // 设置spel表达式解析器
+    beanFactory.setBeanExpressionResolver(new StandardBeanExpressionResolver(beanFactory.getBeanClassLoader()));
+    // 设置属性编辑器注册器
+    beanFactory.addPropertyEditorRegistrar(new ResourceEditorRegistrar(this, getEnvironment()));
+ 
+    // 添加一个BeanPostProcessor：ApplicationContextAwareProcessor，当你的bean实现了spring中xxxAware这样的接口，那么bean创建的过程中，将由ApplicationContextAwareProcessor来回调这些接口，将对象注入进去
+    beanFactory.addBeanPostProcessor(new ApplicationContextAwareProcessor(this));
+    // 自动注入的时候，下面这些接口定义的方法，将会被跳过自动注入
+    beanFactory.ignoreDependencyInterface(EnvironmentAware.class);
+    beanFactory.ignoreDependencyInterface(EmbeddedValueResolverAware.class);
+    beanFactory.ignoreDependencyInterface(ResourceLoaderAware.class);
+    beanFactory.ignoreDependencyInterface(ApplicationEventPublisherAware.class);
+    beanFactory.ignoreDependencyInterface(MessageSourceAware.class);
+    beanFactory.ignoreDependencyInterface(ApplicationContextAware.class);
+ 
+    // 注册依赖注入的时候查找的对象，比如你的bean中想用ResourceLoader
+    beanFactory.registerResolvableDependency(BeanFactory.class, beanFactory);
+    beanFactory.registerResolvableDependency(ResourceLoader.class, this);
+    beanFactory.registerResolvableDependency(ApplicationEventPublisher.class, this);
+    beanFactory.registerResolvableDependency(ApplicationContext.class, this);
+ 
+    // 注入一个beanpostprocessor：ApplicationListenerDetector
+    beanFactory.addBeanPostProcessor(new ApplicationListenerDetector(this));
+ 
+    // 将Environment注册到spring容器，对应的bena名称是environment
+    if (!beanFactory.containsLocalBean(ENVIRONMENT_BEAN_NAME)) {
+        beanFactory.registerSingleton(ENVIRONMENT_BEAN_NAME, getEnvironment());
+    }
+    // 将系统属性注册到spring容器，对应的bean名称是systemProperties
+    if (!beanFactory.containsLocalBean(SYSTEM_PROPERTIES_BEAN_NAME)) {
+        beanFactory.registerSingleton(SYSTEM_PROPERTIES_BEAN_NAME, getEnvironment().getSystemProperties());
+    }
+    // 将系统环境变量配置信息注入到spring容器，对应的bean名称是systemEnvironment
+    if (!beanFactory.containsLocalBean(SYSTEM_ENVIRONMENT_BEAN_NAME)) {
+        beanFactory.registerSingleton(SYSTEM_ENVIRONMENT_BEAN_NAME, getEnvironment().getSystemEnvironment());
+    }
+}
+```
+
+其中关键代码`beanFactory.addBeanPostProcessor(new ApplicationContextAwareProcessor(this));`ApplicationContextAwareProcessor源码
+
+```java
+if (bean instanceof EnvironmentAware) {
+    ((EnvironmentAware) bean).setEnvironment(this.applicationContext.getEnvironment());
+}
+if (bean instanceof EmbeddedValueResolverAware) {
+    ((EmbeddedValueResolverAware) bean).setEmbeddedValueResolver(this.embeddedValueResolver);
+}
+if (bean instanceof ResourceLoaderAware) {
+    ((ResourceLoaderAware) bean).setResourceLoader(this.applicationContext);
+}
+if (bean instanceof ApplicationEventPublisherAware) {
+    ((ApplicationEventPublisherAware) bean).setApplicationEventPublisher(this.applicationContext);
+}
+if (bean instanceof MessageSourceAware) {
+    ((MessageSourceAware) bean).setMessageSource(this.applicationContext);
+}
+if (bean instanceof ApplicationContextAware) {
+    ((ApplicationContextAware) bean).setApplicationContext(this.applicationContext);
+}
+```
+
+```java
+beanFactory.registerResolvableDependency(BeanFactory.class, beanFactory);
+beanFactory.registerResolvableDependency(ResourceLoader.class, this);
+beanFactory.registerResolvableDependency(ApplicationEventPublisher.class, this);
+beanFactory.registerResolvableDependency(ApplicationContext.class, this);
+```
+
+这个用来向Spring容器中添加依赖在查找对象，第一个行添加BeanFactory，当需要使用这些属性时，BeanFactory将自动注入
+
+```java
+beanFactory.addBeanPostProcessor(new ApplicationListenerDetector(this));
+```
+
+ApplicationListenerDetebtor也是一个BeanPostProcessor，处理自定义的监听器
+
+当Bean实现了ApplicationListener接口，是一个事件监听器的时候，那么这个Bean的创建过程会被ApplicationListenerDetector，会将Bean添加到Spring上下文容器的事件监听器列表中
+
+```java
+if (!beanFactory.containsLocalBean(ENVIRONMENT_BEAN_NAME)) {
+    beanFactory.registerSingleton(ENVIRONMENT_BEAN_NAME, getEnvironment());
+}
+```
+
+将Environment作为单例注册到Spring容器单例列表中，对应的bean名称是environment，当我们的bean中需要使用到Environment的时候，可以使用下面的写法，此时Spring容器创建bean的过程，就会从单例的bean列表中找到Environment，将其注入到下面的属性中
+
+```java
+@Autowire
+private Environment environment
+```
+
+```java
+getEnvironment().getSystemProperties() -- 对应 --> System.getProperties()
+getEnvironment().getSystemEnvironment() -- 对应 --> System.getenv()
+```
+
+上面两个方法，通过`java -jar -D参数=值`命令配置的参数，会被放在System.getProperties()中
+
+### BeanFactory后置处理阶段
+
+```java
+postProcessBeanFactory(beanFactory);
+```
+
+这个方法留给子类实现的，此时beanFactory已经创建好了，但是容器中的bean还没有被实例化，子类可以实现这个方法，可以对BeanFactory做一些特殊的配置，比如可以添加一些自定义BeanPostProcessor等等，主要是留给子类去扩展的
+
+### BeanFactory注册BeanPostProcessor阶段
+
+```java
+invokeBeanFactoryPostProcessors(beanFactory);
+```
+
+这个阶段主要就是从Spring容器中找到BeanFactoryPostProcessor接口的所有实现类，然后调用，完成所有Bean注册的功能，注意是**Bean注册**，即将Bean的定义信息转换为BeanDefinition对象，然后注册到Spring容器中，此时Bean还未实例化
+
+> 阶段一在Spring容器中注册了一个非常关键的Bean：ConfigurationClassPostProcessor
+>
+> ```java
+> if (!registry.containsBeanDefinition(CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+>     RootBeanDefinition def = new RootBeanDefinition(ConfigurationClassPostProcessor.class);
+>     def.setSource(source);
+>     beanDefs.add(registerPostProcessor(registry, def, CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME));
+> }
+> ```
+>
+> ConfigurationClassPostProcessor就实现了BeanFactoryPostProcessor接口，所以ConfigurationClassPostProcessor会在阶段6中被调用，下面这些注解都是在这个类中处理的
+>
+> ```java
+> @Configuration
+> @Component
+> @PropertySource
+> @PropertySources
+> @ComponentScan
+> @ComponentScans
+> @Import
+> @ImportResource
+> @Bean
+> ```
+
+**通常，阶段6执行完毕之后，我们所有自定义的bean都已经被注册到spring容器中了，被转换为BeanDefinition丢到BeanFactory中了，此时bean还未被实例化**
+
+### 注册BeanPostProcessor
+
+```java
+registerBeanPostProcessors(beanFactory);
+```
+
+注册BeanPostProcessor，这个阶段会遍历Spring容器bean定义列表，把所有实现了BeanPostProcessor接口的Bean提出来，然后将他们添加到Spring容器的BeanPostProcessor列表中
+
+BeanPostProcessor是bean后置处理器，其内部提供了很多方法，用来对Bean创建过程进行扩展
+
+### 初始化内存Bean：MessageSource
+
+```java
+initMessageSource();
+```
+
+MessageSource是用来处理国际化的，这个阶段会将MessageSource创建好
+
+### 初始化内建Bean：Spring事件广播器
+
+```java
+initApplicationEventMulticaster();
+```
+
+ApplicationEventMulticaster是事件广播器，用来广播事件，这个阶段会将ApplicationEventMulticaster创建好，如果想自定义事件广播器
+
+### Spring应用上下文刷新阶段，由子类实现
+
+```java
+onRefresh();
+```
+
+用来初始化其他特殊的Bean，由子类去实现
+
+### Spring事件监听器注册阶段
+
+```java
+registerListeners();
+```
+
+注册事件监听器到事件广播器中
+
+```java
+protected void registerListeners() {
+    // 先注册静态指定的侦听器,即将spring上下文中添加的时间监听器，添加到时间广播器（ApplicationEventMulticaster）中
+    for (ApplicationListener<?> listener : getApplicationListeners()) {
+        getApplicationEventMulticaster().addApplicationListener(listener);
+    }
+ 
+    // 将spring容器中定义的事件监听器，添加到时间广播器（ApplicationEventMulticaster）中
+    String[] listenerBeanNames = getBeanNamesForType(ApplicationListener.class, true, false);
+    for (String listenerBeanName : listenerBeanNames) {
+        getApplicationEventMulticaster().addApplicationListenerBean(listenerBeanName);
+    }
+ 
+    // 此时事件广播器准备好了，所以此时发布早期的事件（早期的事件由于事件广播器还未被创建，所以先被放在了earlyApplicationEvents中，而此时广播器创建好了，所以将早期的时间发布一下）
+    Set<ApplicationEvent> earlyEventsToProcess = this.earlyApplicationEvents;
+    this.earlyApplicationEvents = null;
+    if (earlyEventsToProcess != null) {
+        for (ApplicationEvent earlyEvent : earlyEventsToProcess) {
+            getApplicationEventMulticaster().multicastEvent(earlyEvent);
+        }
+    }
+}
+```
+
+首先看，将上下文中的事件监听器添加到事件广播器中
+
+```java
+org.springframework.context.support.AbstractApplicationContext
+ 
+Set<ApplicationListener<?>> applicationListeners = new LinkedHashSet<>();
+ 
+public Collection<ApplicationListener<?>> getApplicationListeners() {
+    return this.applicationListeners;
+}
+ 
+@Override
+public void addApplicationListener(ApplicationListener<?> listener) {
+    Assert.notNull(listener, "ApplicationListener must not be null");
+    if (this.applicationEventMulticaster != null) {
+        this.applicationEventMulticaster.addApplicationListener(listener);
+    }
+    this.applicationListeners.add(listener);
+}
+```
+
+再看，广播早期的事件，由于事件广播器applicationEventMulticaster还是空的，所以事件被放在了this.earlyApplicationEvents这个结合中并没有广播，等到这个时候才开始广播，在阶段11之前调用publishEvent都不会有任何效果
+
+### 实例化所有剩余的（非Lazy Init）单例
+
+```java
+finishBeanFactoryInitialization(beanFactory);
+```
+
+这个方法中将实例化所有单例Bean（不包含需要延迟实例化的Bean）
+
+```java
+protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+    // 添加${}表达式解析器
+    if (!beanFactory.hasEmbeddedValueResolver()) {
+        beanFactory.addEmbeddedValueResolver(strVal -> getEnvironment().resolvePlaceholders(strVal));
+    }
+
+    // 冻结所有Bean定义，表示已注册的Bean定义不会被进一步修改或处理，这允许工厂缓存Bean
+    beanFactory.freezeConfiguration();
+
+	// 实例化所有单例Bean，通常scope=singleton的bean
+    beanFactory.preInstantiateSingletons();
+}
+```
+
+这里会调用beanFactory的preInstantiateSingletons()方法，源码位于DefaultListableBeanFactory
+
+```java
+org.springframework.beans.factory.support.DefaultListableBeanFactory#preInstantiateSingletons
+ 
+public void preInstantiateSingletons() throws BeansException {
+    // beanDefinitionNames表示当前BeanFactory中定义的bean名称列表，
+    List<String> beanNames = new ArrayList<>(this.beanDefinitionNames);
+ 
+    // 循环实例化bean
+    for (String beanName : beanNames) {
+        //这里根据beanName来来实例化bean，代码省略了。。。。
+    }
+ 
+    // 变量bean，若bean实现了SmartInitializingSingleton接口，将调用其afterSingletonsInstantiated()方法
+    for (String beanName : beanNames) {
+        Object singletonInstance = getSingleton(beanName);
+        if (singletonInstance instanceof SmartInitializingSingleton) {
+            final SmartInitializingSingleton smartSingleton = (SmartInitializingSingleton) singletonInstance;
+            smartSingleton.afterSingletonsInstantiated();
+        }
+    }
+}
+```
+
+1. 完成所有单例bean的实例化：循环遍历beanNames列表，完成所有单例bean的实例化工作，这个循环完成之后，所有单例Bean已经实例化完成了，被放在spring容器缓存
+2. 回调SmartInitializingSingleton接口：此时所有的单例bean已经实例化好了，此时遍历所有单例bean，若bean实现了SmartInitializingSingleton接口，这个接口中有个afterSingletonsInstantiated方法，此时会回调这个方法，若想在所有单例bean创建完毕之后，可以实现这个接口
+
+### 刷新完成阶段
+
+```java
+finishRefresh();
+```
+
+```java
+protected void finishRefresh() {
+    // 清理一些资源缓存
+    clearResourceCaches();
+ 
+    // 为此上下文初始化生命周期处理器
+    initLifecycleProcessor();
+ 
+    // 首先将刷新传播到生命周期处理器
+    getLifecycleProcessor().onRefresh();
+ 
+    // 发布ContextRefreshedEvent事件
+    publishEvent(new ContextRefreshedEvent(this));
+}
+```
+
+为上下文初始化生命周期处理器
+
+```java
+protected void initLifecycleProcessor() {
+    
+    ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+    //spring容器中是否有名称为"lifecycleProcessor"的bean
+    if (beanFactory.containsLocalBean("lifecycleProcessor")) {
+        //从spring容器中找到LifecycleProcessor，赋给this.lifecycleProcessor
+        this.lifecycleProcessor =
+            beanFactory.getBean("lifecycleProcessor", LifecycleProcessor.class);
+    }
+    else {
+        //如果spring容器中没有自定义lifecycleProcessor，那么创建一个默认的DefaultLifecycleProcessor
+        DefaultLifecycleProcessor defaultProcessor = new DefaultLifecycleProcessor();
+        defaultProcessor.setBeanFactory(beanFactory);
+        //设置当前spring应用上下文的生命周期处理器
+        this.lifecycleProcessor = defaultProcessor;
+        //将其注册到spring容器中
+        beanFactory.registerSingleton("lifecycleProcessor", this.lifecycleProcessor);
+    }
+}
+```
+
+首先将刷新传播到生命周期处理器
+
+```java
+getLifecycleProcessor().onRefresh();
+```
+
+调用LifecycleProcessor的onRefresh方法，org.springframework.context.LifecycleProcessor这个接口，生命周期处理器，接口中定义了两个方法，而onClose方法会在上下文关闭中会被调用，稍后会看到
+
+```java
+public interface LifecycleProcessor extends Lifecycle {
+ 
+ /**
+  * 上下文刷新通知
+  */
+ void onRefresh();
+ 
+ /**
+  * 上下文关闭通知
+  */
+ void onClose();
+ 
+}
+```
+
+先看onRefresh方法，这个接口有默认实现org.springframework.context.support.DefaultLifecycleProcessor，所以默认情况下，我们可以直接看DefaultLifecycleProcessor中的onRefresh源码
+
+```java
+public void onRefresh() {
+    startBeans(true);
+    this.running = true;
+}
+```
+
+进入startBeans(true)内部看看，就是从容器上找到所有实现org.springframework.context.Lifecycle接口的bean，然后调用start方法
+
+```java
+private void startBeans(boolean autoStartupOnly) {
+    Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+    Map<Integer, LifecycleGroup> phases = new HashMap<>();
+    lifecycleBeans.forEach((beanName, bean) -> {
+        if (!autoStartupOnly || (bean instanceof SmartLifecycle && ((SmartLifecycle) bean).isAutoStartup())) {
+            int phase = getPhase(bean);
+            LifecycleGroup group = phases.get(phase);
+            if (group == null) {
+                group = new LifecycleGroup(phase, this.timeoutPerShutdownPhase, lifecycleBeans, autoStartupOnly);
+                phases.put(phase, group);
+            }
+            group.add(beanName, bean);
+        }
+    });
+    if (!phases.isEmpty()) {
+        List<Integer> keys = new ArrayList<>(phases.keySet());
+        Collections.sort(keys);
+        for (Integer key : keys) {
+            phases.get(key).start();
+        }
+    }
+}
+```
+
+发布ConetextRefreshedEvent事件
+
+```java
+publishEvent(new ContextRefreshedEvent(this));
+```
+
+发布ContectRefreshedEvent事件，想在这个阶段做事情，可以监听这个事件
+
+**总结**
+
+这个阶段主要干了3个事情：
+
+1. 初始化当前上下文的生命周期处理器LifecycleProcessor
+2. 调用LifecycleProcessor.onRefresh()方法，若没有自定义LifecycleProcessor，那么会走DefaultLifecycleProcessor，其内部会调用Spring容器中所实现Lifecycle接口的bean的start方法
+3. 发布ContextRefreshedEvent事件
+
+## Spring应用上下文关闭阶段
+
+```java
+applicationContext.close()
+```
+
+最终会进入到doClose()方法
+
+```java
+org.springframework.context.support.AbstractApplicationContext#doClose
+ 
+protected void doClose() {
+    // 判断是不是需要关闭（active为tue的时候，才能关闭，并用cas确保并发情况下只能有一个执行成功）
+    if (this.active.get() && this.closed.compareAndSet(false, true)) {
+        
+        // 发布关闭事件ContextClosedEvent
+        publishEvent(new ContextClosedEvent(this));
+ 
+        // 调用生命周期处理器的onClose方法
+        if (this.lifecycleProcessor != null) {
+            this.lifecycleProcessor.onClose();
+        }
+ 
+        // 销毁上下文的BeanFactory中所有缓存的单例
+        destroyBeans();
+ 
+        // 关闭BeanFactory本身
+        closeBeanFactory();
+ 
+        // 留给子类去扩展的
+        onClose();
+ 
+        // 恢复事件监听器列表至刷新之前的状态，即将早期的事件监听器还原
+        if (this.earlyApplicationListeners != null) {
+            this.applicationListeners.clear();
+            this.applicationListeners.addAll(this.earlyApplicationListeners);
+        }
+ 
+        // 标记活动状态为：false
+        this.active.set(false);
+    }
+}
+```
+
+发布ContextClosedEvent事件
+
+```java
+publishEvent(new ContextClosedEvent(this));
+```
+
+调用生命周期处理器的onClose方法，默认使用DefaultLifecycleProcessor的onClose()
+
+```java
+public void onClose() {
+    stopBeans();
+    //将running设置为false
+    this.running = false;
+}
+```
+
+stopBeans()就是从容器中找到所有实现了org.springframework.context.Lifecycle接口的bean，然后调用他们的close()方法
+
+```java
+private void stopBeans() {
+    Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+    Map<Integer, LifecycleGroup> phases = new HashMap<>();
+    lifecycleBeans.forEach((beanName, bean) -> {
+        int shutdownPhase = getPhase(bean);
+        LifecycleGroup group = phases.get(shutdownPhase);
+        if (group == null) {
+            group = new LifecycleGroup(shutdownPhase, this.timeoutPerShutdownPhase, lifecycleBeans, false);
+            phases.put(shutdownPhase, group);
+        }
+        group.add(beanName, bean);
+    });
+    if (!phases.isEmpty()) {
+        List<Integer> keys = new ArrayList<>(phases.keySet());
+        keys.sort(Collections.reverseOrder());
+        for (Integer key : keys) {
+            phases.get(key).stop();
+        }
+    }
+}
+```
+
+销毁上下文的BeanFactory中所有缓存的单例bean
+
+```java
+destroyBeans();
+```
+
+1. 调用bean的销毁方法
+
+   bean实现了org.springframework.beans.factory.DisposableBean接口，此时会被调用，还有bean中有方法标记了@PreDestroy注解的，此时会被调用
+
+2. 将Bean信息从Beanfactory中清除
+
+```java
+closeBeanFactory();
+```
+
+主要就是将Spring应用上下文中的beanFactory属性还原
+
+```java
+org.springframework.context.support.AbstractRefreshableApplicationContext#closeBeanFactory
+ 
+@Override
+protected final void closeBeanFactory() {
+    synchronized (this.beanFactoryMonitor) {
+        if (this.beanFactory != null) {
+            this.beanFactory.setSerializationId(null);
+            this.beanFactory = null;
+        }
+    }
+}
+```
 
 # JDK动态代理和CGLIB代理
 
@@ -6403,7 +7278,7 @@ public interface Joinpoint {
 }
 ```
 
-![JoinPoint重要实现类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\JoinPoint重要实现类.png)
+![JoinPoint重要实现类](Picture\Spring\JoinPoint重要实现类.png)
 
 **Invocation接口**
 
@@ -6511,7 +7386,7 @@ public interface Advice {
 }
 ```
 
-![Advice重要实现类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\Advice重要实现类.png)
+![Advice重要实现类](Picture\Spring\Advice重要实现类.png)
 
 **Advice接口**
 
@@ -6767,7 +7642,7 @@ public interface Advisor {
 }
 ```
 
-![Advisor重要实现类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\Advisor重要实现类.png)
+![Advisor重要实现类](Picture\Spring\Advisor重要实现类.png)
 
 **PointcutAdvisor接口**
 
@@ -6861,7 +7736,7 @@ public class Test1 {
 
 创建代理所需参数配置主要通过AdvisedSupport这个类实现的
 
-![AdvisedSupport相关接口和类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\AdvisedSupport.png)
+![AdvisedSupport相关接口和类](Picture\Spring\AdvisedSupport.png)
 
 **TargetClassAware接口**
 
@@ -7461,7 +8336,7 @@ AopProxy aopProxy = aopProxyFactory.createAopProxy(advisedSupport);
 
 此阶段会根据AdvisedSupport中配置信息，判断具体是采用CGLIB的方式还是采用jdk动态代理的方式获取代理对象
 
-![AopProxy相关类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\根据配置获取AopProxy.png)
+![AopProxy相关类](Picture\Spring\根据配置获取AopProxy.png)
 
 **AopProxy接口**
 
@@ -8065,7 +8940,7 @@ public List<Object> getInterceptorsAndDynamicInterceptionAdvice(Method method, @
 
 会调用DefaultAdvisorChainFactory#getInterceptorsAndDynamicInterceptionAdvice方法获取方法上匹配的拦截器链
 
-![获取方法连接器链](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\获取方法连接器链.png)
+![获取方法连接器链](Picture\Spring\获取方法连接器链.png)
 
 **AdvisorChainFactory接口**
 
@@ -8347,11 +9222,11 @@ enhancer.setCallbackFilter(new ProxyCallbackFilter(
 
   AOP创建代理相关的类
 
-  ![AOP](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\AOP.png)
+  ![AOP](Picture\Spring\AOP.png)
 
 ## 手动三种方式
 
-![手动创建AOP](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\手动创建AOP.png)
+![手动创建AOP](Picture\Spring\手动创建AOP.png)
 
 * ProxyFactory方式
 
@@ -9043,7 +9918,7 @@ public Object invoke(MethodInvocation mi) throws Throwable {
 | @AfterReturning | 方法执行后     | 是           | 否                       |
 | @AfterThrowing  | 方法发生异常后 | 否           | 是                       |
 
-![Aop通知类型](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\Aop通知类型.png)
+![Aop通知类型](Picture\Spring\Aop通知类型.png)
 
 # @EnableAspectJAutoProxy、@Aspect中通知顺序详解
 
@@ -9765,7 +10640,7 @@ public interface PlatformTransactionManager {
 
 PlatformTransactionManger多个实现类，用来应对不同的环境
 
-![PlatformTransactionManager多个实现类](D:\WorkSpace\Mnsx-Note\2023\Picture\Spring\PlatformTransactionManager多个实现类.png)
+![PlatformTransactionManager多个实现类](Picture\Spring\PlatformTransactionManager多个实现类.png)
 
 * JpaTransactionManager：如果你用Jpa来操作DB，那么需要这个管理器来控制事务
 * DataSourceTransactionManager：如果指定数据源的方式，JdbcTemplate、Mybatis、Ibatis，那么需要使用这个管理器来帮你控制事务
@@ -10727,10 +11602,6 @@ public enum Propagation {
   ```
 
 > **结论：在外部开启事务后，内部杯NESTED修饰后，会开启一个外部事务的子事务，外部回滚，子事务必须回滚，子事务回滚外部事务不受影响**
-
-# Spring中管理多数据源事务
-
-
 
 # Spring事务失效常见情况
 
