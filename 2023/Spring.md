@@ -1591,6 +1591,7 @@ Filter[] includeFilters() default {};
 	 * 当type=FilterType.ANNOTATION时，通过classes参数可以指定一些注解，用来判断被扫描的类上是否有classes参数指定的注解
 	 * 当type=FilterType.ASSIGNABLE_TYPE时，通过classes参数可以指定一些类型，用来判断被扫描的类是否是classes参数指定的类型
 	 * 当type=FilterType.CUSTOM时，表示这个过滤器时用户自定义的，classes参数就是用来指定用户自定的过滤器，自定义过滤器需要实现org.springframework.core.type.filter.TypeFilter接口
+	 * /
     @AliasFor("classes")
     Class<?>[] value() default {};
     @AliasFor("value")
