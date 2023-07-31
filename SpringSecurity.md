@@ -2140,7 +2140,7 @@ public class LoginUser implements UserDetails {
 
 ~~~~
 
-​		LoginUser修改完后我们就可以在UserDetailsServiceImpl中去把权限信息封装到LoginUser中了。我们写死权限进行测试，后面我们再从数据库中查询权限信息。
+​		LoginUser修改完后我们就可以在UserDetailsServiceImpl中去把权限信息封装到Logi	nUser中了。我们写死权限进行测试，后面我们再从数据库中查询权限信息。
 
 ~~~~java
 package com.sangeng.service.impl;
